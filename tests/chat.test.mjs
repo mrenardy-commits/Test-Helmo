@@ -1,0 +1,11 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {handler} from '../netlify/functions/chat.mjs';
+Object.assign(process.env,{GROQ_API_KEY:'test',GROQ_MODEL:'test-model',SUPABASE_URL:'https://example.invalid',SUPABASE_SECRET_KEY:'test',CHAT_ACCESS_TOKEN:'private-test'});
+const event=question=>({httpMethod:'POST',headers:{authorization:'Bearer private-test'},body:JSON.stringify({question})});
+test('refuse une méthode non autorisée',async()=>assert.equal((await handler({httpMethod:'GET'})).statusCode,405));
+test('refuse un accès sans code',async()=>assert.equal((await handler({...event('test'),headers:{}})).statusCode,401));
+test('refuse une question vide',async()=>assert.equal((await handler(event(''))).statusCode,400));
+test('aucun passage : aucun appel au LLM',async()=>{const original=global.fetch;let count=0;global.fetch=async()=>{count++;return new Response('[]');};try{const result=await handler(event('batterie'));assert.equal(result.statusCode,200);assert.equal(count,1);assert.deepEqual(JSON.parse(result.body).sources,[]);}finally{global.fetch=original;}});
+test('réponse et sources : deux appels serveur',async()=>{const original=global.fetch;let count=0;global.fetch=async(url,options)=>{count++;if(count===1)return new Response(JSON.stringify([{source:'exemple.txt',chunk_index:0,content:'La durée est de sept ans.'}]));const payload=JSON.parse(options.body);assert.match(payload.messages[1].content,/sept ans/);return new Response(JSON.stringify({choices:[{message:{content:'Sept ans [1].'}}]}));};try{const result=await handler(event('durée'));assert.equal(result.statusCode,200);assert.equal(count,2);assert.equal(JSON.parse(result.body).sources[0].source,'exemple.txt');}finally{global.fetch=original;}});
+test('erreur fournisseur : ne divulgue pas le détail',async()=>{const original=global.fetch;global.fetch=async()=>new Response('secret',{status:500});try{const result=await handler(event('durée'));assert.equal(result.statusCode,502);assert.ok(!result.body.includes('secret'));}finally{global.fetch=original;}});
